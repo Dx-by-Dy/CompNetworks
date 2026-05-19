@@ -323,6 +323,6 @@ fn is_blocked(uri: &Uri, blacklist: &BlacklistConfig) -> bool {
             return true;
         }
     }
-
+    
     false
 }
