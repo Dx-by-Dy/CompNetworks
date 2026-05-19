@@ -1,2 +1,0 @@
-2026-04-13T05:57:28.775691Z  INFO lab4: query=http://www.example.com status=200 OK
-2026-04-13T05:58:09.671205Z ERROR lab4: query=http://www.example.co err=client error (Connect)
