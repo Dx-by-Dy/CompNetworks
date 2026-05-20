@@ -3,5 +3,10 @@ name = "lab5"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-base64 = "0.22"
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
