@@ -1,49 +1,75 @@
-use lettre::{
-    SmtpTransport, Transport,
-    message::{Mailbox, Message, header::ContentType},
-    transport::smtp::authentication::Credentials,
+use std::{
+    env,
+    io::{BufRead, BufReader, Write},
+    net::TcpStream,
 };
-use std::env;
 
-static SENDER: &str = "pyaterka20@gmail.com";
-static SMTP_SERVER: &str = "smtp.gmail.com";
+fn read_response(reader: &mut BufReader<TcpStream>) -> std::io::Result<String> {
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    print!("SERVER: {}", response);
+    Ok(response)
+}
+
+fn send_command(
+    stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    command: &str,
+) -> std::io::Result<()> {
+    print!("CLIENT: {}", command);
+
+    stream.write_all(command.as_bytes())?;
+    stream.flush()?;
+    read_response(reader)?;
+    Ok(())
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 4 {
-        eprintln!("Usage: {} <recipient> <format> <body>", args[0]);
+    if args.len() < 6 {
+        eprintln!("Usage: {} <server> <port> <from> <to> <message>", args[0]);
         std::process::exit(1);
     }
 
-    let recipient = &args[1];
-    let format = &args[2];
-    let body = &args[3];
+    let server = &args[1];
+    let port = &args[2];
+    let from = &args[3];
+    let to = &args[4];
+    let message = &args[5];
 
-    let content_type = match format.as_str() {
-        "txt" => ContentType::TEXT_PLAIN,
-        "html" => ContentType::TEXT_HTML,
-        _ => {
-            eprintln!("Unsupported format: use txt or html");
-            std::process::exit(1);
-        }
-    };
+    let address = format!("{server}:{port}");
+    let mut stream = TcpStream::connect(address)?;
+    let mut reader = BufReader::new(stream.try_clone()?);
 
-    let email = Message::builder()
-        .from(SENDER.parse::<Mailbox>()?)
-        .to(recipient.parse::<Mailbox>()?)
-        .subject("Test email")
-        .header(content_type)
-        .body(body.to_string())?;
+    read_response(&mut reader)?;
 
-    let creds = Credentials::new(SENDER.to_string(), std::env::var("PASSWORD")?);
-    let mailer = SmtpTransport::starttls_relay(SMTP_SERVER)?
-        .credentials(creds)
-        .build();
+    send_command(&mut stream, &mut reader, "HELO localhost\r\n")?;
+    send_command(
+        &mut stream,
+        &mut reader,
+        &format!("MAIL FROM:<{}>\r\n", from),
+    )?;
+    send_command(&mut stream, &mut reader, &format!("RCPT TO:<{}>\r\n", to))?;
+    send_command(&mut stream, &mut reader, "DATA\r\n")?;
 
-    match mailer.send(&email) {
-        Ok(_) => println!("Email sent successfully"),
-        Err(e) => eprintln!("Could not send email: {e}"),
-    }
+    let data = format!(
+        "Subject: Test message\r\n\
+         From: {}\r\n\
+         To: {}\r\n\
+         Content-Type: text/plain; charset=UTF-8\r\n\
+         \r\n\
+         {}\r\n\
+         .\r\n",
+        from, to, message
+    );
+    print!("CLIENT: {}", data);
+
+    stream.write_all(data.as_bytes())?;
+    stream.flush()?;
+    read_response(&mut reader)?;
+
+    send_command(&mut stream, &mut reader, "QUIT\r\n")?;
 
     Ok(())
 }
