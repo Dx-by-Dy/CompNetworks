@@ -1,7 +1,0 @@
-blocked_domains = [
-    "google.com"
-]
-
-blocked_urls = [
-    "http://en.wikipedia.org/wiki/Winter_Fire",
-]
