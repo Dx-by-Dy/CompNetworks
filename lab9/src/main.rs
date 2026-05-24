@@ -3,7 +3,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::process;
 use std::time::Duration;
 
-fn is_port_free(ip: &str, port: u16) -> bool {
+fn is_port_busy(ip: &str, port: u16) -> bool {
     let addr: SocketAddr = format!("{}:{}", ip, port)
         .parse()
         .expect(&format!("Failed to parse address {}:{}", ip, port));
@@ -34,8 +34,8 @@ fn main() {
     );
 
     for port in start_port..=end_port {
-        if is_port_free(ip, port) {
-            println!("Port {} is free", port);
+        if is_port_busy(ip, port) {
+            println!("Port {} is busy", port);
         }
     }
 }
