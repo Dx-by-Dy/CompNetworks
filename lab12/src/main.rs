@@ -64,13 +64,15 @@ fn main() {
     }
 
     simulate_rip(&mut network);
-
-    print_tables(&network);
 }
 
 fn simulate_rip(network: &mut HashMap<String, Router>) {
     let mut changed = true;
     let mut iteration = 0;
+
+    println!("=== RIP iteration {} ===", iteration);
+    print_tables(network);
+    println!();
 
     while changed {
         changed = false;
@@ -113,6 +115,9 @@ fn simulate_rip(network: &mut HashMap<String, Router>) {
                 }
             }
         }
+
+        print_tables(network);
+        println!();
     }
 }
 
