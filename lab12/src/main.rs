@@ -71,11 +71,7 @@ async fn main() {
         let mut neighbors = Vec::new();
 
         for neighbor in router.neighbors {
-            let sender = senders
-                .get(&neighbor.ip)
-                .map(|tx| tx.clone())
-                .expect("Neighbor not found");
-
+            let sender = senders.get(&neighbor.ip).map(|tx| tx.clone()).unwrap();
             neighbors.push(Neighbor {
                 ip: neighbor.ip,
                 metric: neighbor.metric,
@@ -146,16 +142,21 @@ async fn router_task(mut router: Router) {
                             metric: new_metric,
                         };
 
+                        let old_route = router.table.insert(
+                            route.destination.clone(),
+                            new_route.clone()
+                        ).unwrap_or(Route {
+                            destination: "-".to_string(),
+                            next_hop: "-".to_string(),
+                            metric: INF,
+                        });
+
                         print_changes(
                             &router.ip,
-                            &route,
+                            &old_route,
                             &new_route
                         ).await;
 
-                        router.table.insert(
-                            route.destination.clone(),
-                            new_route
-                        );
                         changed = true;
                     }
                 }
