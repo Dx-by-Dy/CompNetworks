@@ -1,8 +1,30 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::sync::LazyLock;
+use std::time::Duration;
+use tokio::sync::{Mutex, mpsc};
+use tokio::time::sleep;
 
 const INF: u32 = 16;
+static PRINT_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NetworkConfig {
+    routers: Vec<RouterConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RouterConfig {
+    ip: String,
+    neighbors: Vec<NeighborConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NeighborConfig {
+    ip: String,
+    metric: u32,
+}
 
 #[derive(Debug, Clone)]
 struct Route {
@@ -12,37 +34,57 @@ struct Route {
 }
 
 #[derive(Debug, Clone)]
+struct RoutingUpdate {
+    from: String,
+    routes: Vec<Route>,
+}
+
+#[derive(Clone)]
+struct Neighbor {
+    ip: String,
+    metric: u32,
+    sender: mpsc::Sender<RoutingUpdate>,
+}
+
 struct Router {
     ip: String,
     neighbors: Vec<Neighbor>,
     table: HashMap<String, Route>,
+    receiver: mpsc::Receiver<RoutingUpdate>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct NetworkConfig {
-    routers: Vec<RouterConfig>,
-}
+#[tokio::main]
+async fn main() {
+    let configs = load_from_json("network.json");
+    let mut senders = HashMap::new();
+    let mut receivers = HashMap::new();
 
-#[derive(Debug, Serialize, Deserialize)]
-struct RouterConfig {
-    ip: String,
-    neighbors: Vec<Neighbor>,
-}
+    for router in &configs {
+        let (tx, rx) = mpsc::channel::<RoutingUpdate>(32);
+        senders.insert(router.ip.clone(), tx);
+        receivers.insert(router.ip.clone(), rx);
+    }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct Neighbor {
-    ip: String,
-    metric: u32,
-}
+    let mut routers = Vec::new();
+    for router in configs {
+        let receiver = receivers.remove(&router.ip).unwrap();
+        let mut neighbors = Vec::new();
 
-fn main() {
-    let routers = load_from_json("network.json");
-    let mut network: HashMap<String, Router> = HashMap::new();
+        for neighbor in router.neighbors {
+            let sender = senders
+                .get(&neighbor.ip)
+                .map(|tx| tx.clone())
+                .expect("Neighbor not found");
 
-    for r in routers {
+            neighbors.push(Neighbor {
+                ip: neighbor.ip,
+                metric: neighbor.metric,
+                sender,
+            });
+        }
+
         let mut table = HashMap::new();
-
-        for neighbor in &r.neighbors {
+        for neighbor in &neighbors {
             table.insert(
                 neighbor.ip.clone(),
                 Route {
@@ -53,42 +95,39 @@ fn main() {
             );
         }
 
-        network.insert(
-            r.ip.clone(),
-            Router {
-                ip: r.ip,
-                neighbors: r.neighbors,
-                table,
-            },
-        );
+        routers.push(Router {
+            ip: router.ip,
+            neighbors,
+            table,
+            receiver,
+        });
     }
 
-    simulate_rip(&mut network);
+    for router in routers {
+        tokio::spawn(async move {
+            router_task(router).await;
+        });
+    }
+
+    sleep(Duration::from_secs(20)).await;
 }
 
-fn simulate_rip(network: &mut HashMap<String, Router>) {
-    let mut changed = true;
-    let mut iteration = 0;
+async fn router_task(mut router: Router) {
+    println!("Router {} started", router.ip);
 
-    println!("=== RIP iteration {} ===", iteration);
-    print_tables(network);
-    println!();
+    loop {
+        tokio::select! {
+            Some(update) = router.receiver.recv() => {
+                let neighbor_metric = router
+                    .neighbors
+                    .iter()
+                    .find(|n| n.ip == update.from)
+                    .map(|n| n.metric)
+                    .unwrap_or(INF);
 
-    while changed {
-        changed = false;
-        iteration += 1;
-
-        println!("=== RIP iteration {} ===", iteration);
-
-        let snapshot = network.clone();
-
-        for router in network.values_mut() {
-            for neighbor in &router.neighbors {
-                let neighbor_router = snapshot.get(&neighbor.ip).unwrap();
-
-                for route in neighbor_router.table.values() {
-                    let new_metric = (route.metric + neighbor.metric).min(INF);
-
+                let mut changed = false;
+                for route in update.routes {
+                    let new_metric = (route.metric + neighbor_metric).min(INF);
                     let should_update = match router.table.get(&route.destination) {
                         Some(existing) => new_metric < existing.metric,
                         None => {
@@ -101,60 +140,85 @@ fn simulate_rip(network: &mut HashMap<String, Router>) {
                     };
 
                     if should_update {
+                        let new_route = Route {
+                            destination: route.destination.clone(),
+                            next_hop: update.from.clone(),
+                            metric: new_metric,
+                        };
+
+                        print_changes(
+                            &router.ip,
+                            &route,
+                            &new_route
+                        ).await;
+
                         router.table.insert(
                             route.destination.clone(),
-                            Route {
-                                destination: route.destination.clone(),
-                                next_hop: neighbor.ip.clone(),
-                                metric: new_metric,
-                            },
+                            new_route
                         );
-
                         changed = true;
                     }
                 }
+
+                if changed {
+                    print_table(&router.ip, &router.table).await;
+                }
+            }
+            _ = sleep(Duration::from_secs(1)) => {
+                let routes = router.table.values().cloned().collect::<Vec<_>>();
+
+                for neighbor in &router.neighbors {
+                    let update = RoutingUpdate {
+                        from: router.ip.clone(),
+                        routes: routes.clone(),
+                    };
+                    let _ = neighbor.sender.send(update).await;
+                }
             }
         }
-
-        print_tables(network);
-        println!();
     }
 }
 
-fn print_tables(network: &HashMap<String, Router>) {
-    for router in network.values() {
-        println!();
-        println!("Final state of router {} table:", router.ip);
+async fn print_changes(router_ip: &str, old_route: &Route, new_route: &Route) {
+    let mg = PRINT_MUTEX.lock().await;
+    println!("\nChanges in router {} table:", router_ip);
+    println!(
+        "{:<18} {:<18} {:<18} {:<6}",
+        "[Source IP]", "[Destination IP]", "[Next Hop]", "[Metric]"
+    );
+    println!(
+        "{:<18} {:<18} {:<18} {:<6}",
+        router_ip, old_route.destination, old_route.next_hop, old_route.metric
+    );
+    println!(
+        "{:<18} {:<18} {:<18} {:<6}",
+        router_ip, new_route.destination, new_route.next_hop, new_route.metric
+    );
+    drop(mg);
+}
 
+async fn print_table(router_ip: &str, table: &HashMap<String, Route>) {
+    let mg = PRINT_MUTEX.lock().await;
+    println!("\nRouter {} table:", router_ip);
+    println!(
+        "{:<18} {:<18} {:<18} {:<6}",
+        "[Source IP]", "[Destination IP]", "[Next Hop]", "[Metric]"
+    );
+
+    let mut routes = table.values().collect::<Vec<_>>();
+    routes.sort_by(|a, b| a.destination.cmp(&b.destination));
+
+    for route in routes {
         println!(
             "{:<18} {:<18} {:<18} {:<6}",
-            "[Source IP]", "[Destination IP]", "[Next Hop]", "[Metric]"
+            router_ip, route.destination, route.next_hop, route.metric
         );
-
-        let mut routes: Vec<_> = router.table.values().collect();
-        routes.sort_by(|a, b| a.destination.cmp(&b.destination));
-
-        for route in routes {
-            println!(
-                "{:<18} {:<18} {:<18} {:<6}",
-                router.ip, route.destination, route.next_hop, route.metric
-            );
-        }
     }
+    drop(mg);
 }
 
-fn load_from_json(path: &str) -> Vec<Router> {
-    let data = fs::read_to_string(path).expect("Failed to read JSON file");
-
+fn load_from_json(path: &str) -> Vec<RouterConfig> {
+    let data = fs::read_to_string(path).expect("Failed to read JSON");
     let config: NetworkConfig = serde_json::from_str(&data).expect("Invalid JSON");
-
-    config
-        .routers
-        .into_iter()
-        .map(|r| Router {
-            ip: r.ip,
-            neighbors: r.neighbors,
-            table: HashMap::new(),
-        })
-        .collect()
+    config.routers
 }
