@@ -172,7 +172,7 @@ fn main() -> Result<()> {
                     let _ = tx.send(ProbeResult { seq, ip, icmp_type });
                 }
                 _ => {
-                    println!("[icmp={}] ", icmp_type);
+                    // println!("[icmp={}] ", icmp_type);
                 }
             }
         }
@@ -198,7 +198,12 @@ fn main() -> Result<()> {
                 Ok(result) => {
                     if let Some(start) = sent.get(&result.seq) {
                         let rtt = start.elapsed();
-                        println!("{} {}ms  ", result.ip, rtt.as_millis());
+
+                        if let Ok(hostname) = dns_lookup::lookup_addr(&IpAddr::V4(result.ip)) {
+                            println!("{} ({}) {}ms", hostname, result.ip, rtt.as_millis());
+                        } else {
+                            println!("{} {}ms", result.ip, rtt.as_millis());
+                        }
                     }
 
                     if result.icmp_type == ICMP_ECHO_REPLY {
