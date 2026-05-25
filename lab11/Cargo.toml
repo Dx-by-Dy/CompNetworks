@@ -3,9 +3,10 @@ name = "lab11"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-socket2 = "0.5"
-clap = { version = "4", features = ["derive"] }
-anyhow = "1"
-libc = "0.2"
-dns-lookup = "2.0.0"
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
